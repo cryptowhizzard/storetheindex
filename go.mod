@@ -1,4 +1,4 @@
-module github.com/ipni/storetheindex
+module github.com/cryptowhizzard/storetheindex
 
 go 1.20
 
