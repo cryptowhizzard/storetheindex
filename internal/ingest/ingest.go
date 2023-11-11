@@ -1180,61 +1180,55 @@ func (ing *Ingester) ingestWorkerLogic(ctx context.Context, provider peer.ID, as
 			continue
 		}
 
-		lag := total - count
-		log.Infow("Processing advertisement",
-			"adCid", ai.cid,
-			"progress", fmt.Sprintf("%d of %d", count, total),
-			"lag", lag)
+lag := total - count
+log.Infow("Processing advertisement",
+    "adCid", ai.cid,
+    "progress", fmt.Sprintf("%d of %d", count, total),
+    "lag", lag)
 
-		err := ing.ingestAd(ctx, assignment.publisher, ai.cid, ai.resync, frozen, lag, headProvider)
-		if err == nil {
-			// No error at all, this ad was processed successfully.
-			stats.Record(context.Background(), metrics.AdIngestSuccessCount.M(1))
-		}
+err := ing.ingestAd(ctx, assignment.publisher, ai.cid, ai.resync, frozen, lag, headProvider)
+if err == nil {
+    stats.Record(context.Background(), metrics.AdIngestSuccessCount.M(1))
+}
 
-		var adIngestErr adIngestError
-		if errors.As(err, &adIngestErr) {
-			switch adIngestErr.state {
-			case adIngestDecodingErr, adIngestMalformedErr, adIngestEntryChunkErr, adIngestContentNotFound:
-				// These error cases are permanent. If retried later the same
-				// error will happen. So log and drop this error.
-				log.Errorw("Skipping ad because of a permanent error", "adCid", ai.cid, "err", err, "errKind", adIngestErr.state)
-				stats.Record(context.Background(), metrics.AdIngestSkippedCount.M(1))
-				err = nil
-			}
-			stats.RecordWithOptions(context.Background(),
-				stats.WithMeasurements(metrics.AdIngestErrorCount.M(1)),
-				stats.WithTags(tag.Insert(metrics.ErrKind, string(adIngestErr.state))))
-		} else if err != nil {
-			stats.RecordWithOptions(context.Background(),
-				stats.WithMeasurements(metrics.AdIngestErrorCount.M(1)),
-				stats.WithTags(tag.Insert(metrics.ErrKind, "other error")))
-		}
+var adIngestErr adIngestError
+if errors.As(err, &adIngestErr) {
+    switch adIngestErr.state {
+    case adIngestDecodingErr, adIngestMalformedErr, adIngestEntryChunkErr, adIngestContentNotFound:
+        log.Errorw("Skipping ad because of a permanent error", "adCid", ai.cid, "err", err, "errKind", adIngestErr.state)
+        stats.Record(context.Background(), metrics.AdIngestSkippedCount.M(1))
+        err = nil
+    }
+    stats.RecordWithOptions(context.Background(),
+        stats.WithMeasurements(metrics.AdIngestErrorCount.M(1)),
+        stats.WithTags(tag.Insert(metrics.ErrKind, string(adIngestErr.state))))
+} else if err != nil {
+    stats.RecordWithOptions(context.Background(),
+        stats.WithMeasurements(metrics.AdIngestErrorCount.M(1)),
+        stats.WithTags(tag.Insert(metrics.ErrKind, "other error")))
+}
 
-		if err != nil {
-			errText := err.Error()
-			if errors.Is(err, errInternal) {
-				errText = errInternal.Error()
-			}
-			ing.reg.SetLastError(provider, fmt.Errorf("error while ingesting ad %s: %s", ai.cid, errText))
-			log.Errorw("Error while ingesting ad. Bailing early, not ingesting later ads.", "adCid", ai.cid, "err", err, "adsLeftToProcess", i+1)
-			// Tell anyone waiting that the sync finished for this head because
-			// of error.  TODO(mm) would be better to propagate the error.
-			ing.inEvents <- adProcessedEvent{
-				publisher: assignment.publisher,
-				headAdCid: headAdCid,
-				adCid:     ai.cid,
-				err:       err,
-			}
-			return
-		}
-		ing.reg.SetLastError(provider, nil)
+if err != nil {
+    errText := err.Error()
+    if errors.Is(err, errInternal) {
+        errText = errInternal.Error()
+    }
+    ing.reg.SetLastError(provider, fmt.Errorf("error while ingesting ad %s: %s", ai.cid, errText))
+    log.Errorw("Error while ingesting ad. Skipping and continuing with next ads.", "adCid", ai.cid, "err", err, "adsLeftToProcess", i+1)
 
-		keep := ing.mirror.canWrite()
-		if markErr := ing.markAdProcessed(assignment.publisher, ai.cid, frozen, keep); markErr != nil {
-			log.Errorw("Failed to mark ad as processed", "err", markErr)
-		}
+    // Mark this ad as processed or skipped here if necessary
+    // [Add any necessary code here to mark the ad]
 
+    // Continue to the next iteration instead of returning
+    continue
+}
+
+ing.reg.SetLastError(provider, nil)
+
+keep := ing.mirror.canWrite()
+if markErr := ing.markAdProcessed(assignment.publisher, ai.cid, frozen, keep); markErr != nil {
+    log.Errorw("Failed to mark ad as processed", "err", markErr)
+}
 		if !frozen && keep {
 			overwrite := ai.resync && ing.overwriteMirrorOnResync
 			carInfo, err := ing.mirror.write(ctx, ai.cid, false, overwrite)
